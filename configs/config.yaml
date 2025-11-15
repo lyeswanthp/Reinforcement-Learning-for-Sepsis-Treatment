@@ -1,0 +1,227 @@
+# AI Clinician Configuration File
+# MIMIC-IV v3.1 with Linear Q-Learning and WDR-OPE
+
+# Database Configuration
+database:
+  name: "mimic4"  # Your MIMIC-IV database name
+  user: "your_username"
+  password: "your_password"  # Use environment variable in practice
+  host: "localhost"
+  port: 5432
+  schema_hosp: "mimic_hosp"
+  schema_icu: "mimic_icu"
+
+# Cohort Selection
+cohort:
+  sepsis3_definition: true
+  min_age: 18
+  max_age: 120
+  min_icu_los_hours: 12  # Minimum 12 hours in ICU
+  exclude_neonates: true
+
+# MDP Parameters
+mdp:
+  gamma: 0.99  # Discount factor
+  time_window_hours: 4  # 4-hour decision intervals
+
+# State Space (48 features)
+state_features:
+  # Demographics (4)
+  demographics:
+    - gender
+    - age
+    - Weight_kg
+    - re_admission
+
+  # Vital Signs (10)
+  vitals:
+    - HR
+    - SysBP
+    - MeanBP
+    - DiaBP
+    - RR
+    - Temp_C
+    - SpO2
+    - FiO2_1
+    - GCS
+    - mechvent
+
+  # Labs - Chemistry (11)
+  labs_chemistry:
+    - Potassium
+    - Sodium
+    - Chloride
+    - Glucose
+    - BUN
+    - Creatinine
+    - Magnesium
+    - Calcium
+    - SGOT
+    - SGPT
+    - Total_bili
+
+  # Labs - Hematology (5)
+  labs_hematology:
+    - Hb
+    - WBC_count
+    - Platelets_count
+    - PTT
+    - PT
+    - INR
+
+  # Labs - Blood Gas (5)
+  labs_blood_gas:
+    - Arterial_pH
+    - paO2
+    - paCO2
+    - Arterial_BE
+    - HCO3
+    - Arterial_lactate
+
+  # Fluid Balance (4)
+  fluid_balance:
+    - input_total
+    - input_4hourly
+    - output_total
+    - output_4hourly
+
+  # Derived Scores (4)
+  derived:
+    - SOFA
+    - SIRS
+    - Shock_Index
+    - PaO2_FiO2
+    - cumulated_balance
+
+# Action Space (25 = 5 x 5)
+action_space:
+  iv_fluid_bins: 5  # 5 bins for IV fluids
+  vasopressor_bins: 5  # 5 bins for vasopressors
+  total_actions: 25
+
+# Feature Engineering (148 total features)
+feature_engineering:
+  state_features: 48
+  action_features: 10  # One-hot: 5 IV + 5 vaso
+  interaction_features: 90  # 45 non-demographic states × 2 action components
+  total_features: 148
+
+# Normalization
+normalization:
+  method: "zscore"  # z-score normalization
+  continuous_features:
+    log_transform:  # Log transform before z-score
+      - SpO2
+      - BUN
+      - Creatinine
+      - SGOT
+      - SGPT
+      - Total_bili
+      - INR
+      - input_total
+      - input_4hourly
+      - output_total
+      - output_4hourly
+
+  binary_features:  # Subtract 0.5
+    - gender
+    - mechvent
+    - max_dose_vaso
+    - re_admission
+
+# Reward Function
+reward:
+  terminal_survival: 15
+  terminal_death: -15
+  intermediate_sofa_decrease: 0.1  # Per point decrease
+  intermediate_sofa_increase: -0.25  # Per point increase
+  intermediate_no_change: 0
+
+# Data Splitting
+data_split:
+  train: 0.70
+  validation: 0.15
+  test: 0.15
+  random_seed: 42
+  stratify_by_mortality: true
+
+# Q-Learning Algorithm
+q_learning:
+  algorithm: "linear_sgd"  # Linear approximate Q-learning with SGD
+  learning_rate_range: [1e-5, 1e-1]  # For hyperparameter search
+  l2_regularization_range: [1e-6, 1e-2]  # Lambda for weight decay
+  max_epochs: 500
+  early_stopping_patience: 20  # Stop if no validation improvement for 20 epochs
+
+# Hyperparameter Tuning
+hyperparameter_tuning:
+  method: "random_search"
+  n_trials: 100  # 50-100 random trials
+  search_space:
+    learning_rate:
+      distribution: "log-uniform"
+      low: 1e-5
+      high: 1e-1
+    gamma:
+      distribution: "choice"
+      choices: [0.90, 0.95, 0.99]
+    l2_lambda:
+      distribution: "log-uniform"
+      low: 1e-6
+      high: 1e-2
+  optimization_metric: "wdr_value"  # WDR-OPE on validation set
+
+# Off-Policy Evaluation
+ope:
+  methods:
+    - "wpdis"  # Weighted Per-Decision Importance Sampling
+    - "wdr"    # Weighted Doubly Robust (primary method)
+
+  behavior_policy_softening:
+    epsilon: 0.01  # 99%/1% softening
+
+  bootstrap:
+    n_iterations: 1000
+    confidence_level: 0.95
+    sample_size: 25000  # Max trajectories per bootstrap
+    max_sample_proportion: 0.75
+
+  dynamics_model:
+    type: "tabular"  # or "neural_network" for non-linear
+    train_on: "training_set"
+
+# Interpretability Analysis
+interpretability:
+  prototypical_patients:
+    - name: "average"
+      description: "Average patient values"
+    - name: "high_lactate"
+      description: "Elevated lactate (>4 mmol/L)"
+    - name: "low_bp"
+      description: "Hypotensive (SysBP < 90)"
+    - name: "high_sofa"
+      description: "Severe organ failure (SOFA > 10)"
+
+  sensitivity_analysis:
+    variables:
+      - Arterial_lactate
+      - SysBP
+      - SpO2
+    ranges:
+      Arterial_lactate: [0.5, 10.0]
+      SysBP: [60, 180]
+      SpO2: [85, 100]
+
+# Output and Logging
+output:
+  data_dir: "data"
+  results_dir: "results"
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  log_level: "INFO"
+
+# Computational Resources
+computation:
+  n_jobs: -1  # Use all available cores
+  use_gpu: false  # Set to true if using neural network dynamics model
+  random_seed: 42
