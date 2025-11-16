@@ -1,7 +1,12 @@
 # AI Clinician Configuration File
 # MIMIC-IV v3.1 with Linear Q-Learning and WDR-OPE
 
-# Database Configuration
+# Data Source Configuration
+data_source:
+  type: "csv"  # Options: "csv" or "postgres"
+  base_path: "data/raw/mimic-iv-3.1"  # Base path for CSV files
+
+# Database Configuration (for postgres mode)
 database:
   name: "mimic4"  # Your MIMIC-IV database name
   user: "your_username"
@@ -212,12 +217,36 @@ interpretability:
       SysBP: [60, 180]
       SpO2: [85, 100]
 
+# Preprocessing Configuration
+preprocessing:
+  chunk_size: 100000  # Process large files in chunks
+  n_jobs: -1  # Parallel processing (-1 = all cores)
+  cache_intermediate: true  # Cache intermediate results
+
+  # Missing data handling
+  missing_data:
+    strategy: "forward_fill_then_median"  # Options: forward_fill, median, knn
+    max_missing_ratio: 0.5  # Drop features with >50% missing
+
+  # Outlier detection
+  outliers:
+    method: "iqr"  # Options: iqr, zscore, isolation_forest
+    iqr_multiplier: 3.0
+    zscore_threshold: 5.0
+
+  # Time windows
+  time_windows:
+    baseline_hours: 24  # First 24h for baseline features
+    decision_interval_hours: 4  # 4-hour decision windows
+
 # Output and Logging
 output:
   data_dir: "data"
   results_dir: "results"
   log_dir: "logs"
   checkpoint_dir: "checkpoints"
+  processed_dir: "data/processed"
+  intermediate_dir: "data/intermediate"
   log_level: "INFO"
 
 # Computational Resources
