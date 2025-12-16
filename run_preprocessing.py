@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument(
         '--data-path',
         type=str,
-        default=None,
+        default='/projects/lpanch2/Professor_Gloria/Multiple Vasopressors/Datasets/mimic-iv-3.1/mimic-iv-3.1/mimic-iv-3.1',
         help='Path to MIMIC-IV data directory (contains hosp/ and icu/ folders). '
              'If not specified, uses path from config file.'
     )

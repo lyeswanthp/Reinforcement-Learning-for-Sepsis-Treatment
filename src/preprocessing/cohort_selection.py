@@ -259,6 +259,8 @@ class SepsisCohortSelector:
         Identify suspected infection using cultures + antibiotics within 72h window
 
         Sepsis-3 criteria: Culture drawn + antibiotics given within ±72h
+
+        OPTIMIZED VERSION: Uses vectorized operations instead of nested loops
         """
         sepsis_stays = set()
 
@@ -268,58 +270,94 @@ class SepsisCohortSelector:
         subject_ids = cohort['subject_id'].unique()
 
         # Filter prescriptions for antibiotics
+        logger.info(f"    Filtering {len(prescriptions):,} prescriptions for antibiotics...")
         antibiotics = prescriptions[
             prescriptions['subject_id'].isin(subject_ids) &
             prescriptions['drug'].str.lower().str.contains(
                 '|'.join(self.ANTIBIOTIC_KEYWORDS), na=False
             )
         ].copy()
+        logger.info(f"    Found {len(antibiotics):,} antibiotic prescriptions")
 
         # Filter cultures
+        logger.info(f"    Filtering {len(microbiologyevents):,} microbiology events...")
         cultures = microbiologyevents[
             microbiologyevents['subject_id'].isin(subject_ids)
         ].copy()
+        logger.info(f"    Found {len(cultures):,} cultures")
 
         if len(antibiotics) == 0 or len(cultures) == 0:
             logger.warning("    Insufficient antibiotic or culture data")
             return sepsis_stays
 
-        # For each ICU stay, check if culture + antibiotic within 72h window
-        for _, stay in cohort.iterrows():
-            subject_id = stay['subject_id']
-            icu_intime = stay['intime']
-            icu_outtime = stay['outtime']
+        # OPTIMIZATION: Use vectorized merge operations instead of nested loops
+        logger.info("    Performing vectorized infection detection...")
 
-            # Get antibiotics during ICU stay (±24h buffer)
-            stay_antibiotics = antibiotics[
-                (antibiotics['subject_id'] == subject_id) &
-                (antibiotics['starttime'] >= icu_intime - timedelta(hours=24)) &
-                (antibiotics['starttime'] <= icu_outtime + timedelta(hours=24))
-            ]
+        # Prepare cohort with time windows
+        cohort_windows = cohort[['stay_id', 'subject_id', 'intime', 'outtime']].copy()
+        cohort_windows['intime_buffer'] = cohort_windows['intime'] - timedelta(hours=24)
+        cohort_windows['outtime_buffer'] = cohort_windows['outtime'] + timedelta(hours=24)
 
-            # Get cultures during ICU stay (±24h buffer)
-            stay_cultures = cultures[
-                (cultures['subject_id'] == subject_id) &
-                (cultures['charttime'] >= icu_intime - timedelta(hours=24)) &
-                (cultures['charttime'] <= icu_outtime + timedelta(hours=24))
-            ]
+        # Merge antibiotics with cohort on subject_id
+        abx_merged = antibiotics.merge(
+            cohort_windows,
+            on='subject_id',
+            how='inner'
+        )
 
-            # Check for culture + antibiotic within 72h window
-            if len(stay_cultures) > 0 and len(stay_antibiotics) > 0:
-                for _, culture in stay_cultures.iterrows():
-                    culture_time = culture['charttime']
+        # Filter antibiotics within ICU stay window (±24h)
+        abx_in_window = abx_merged[
+            (abx_merged['starttime'] >= abx_merged['intime_buffer']) &
+            (abx_merged['starttime'] <= abx_merged['outtime_buffer'])
+        ][['stay_id', 'subject_id', 'starttime']].copy()
 
-                    # Check if any antibiotic within ±72h of culture
-                    for _, abx in stay_antibiotics.iterrows():
-                        abx_time = abx['starttime']
-                        time_diff = abs((abx_time - culture_time).total_seconds() / 3600)
+        logger.info(f"    Found {len(abx_in_window):,} antibiotic events within ICU windows")
 
-                        if time_diff <= 72:
-                            sepsis_stays.add(stay['stay_id'])
-                            break
+        # Merge cultures with cohort on subject_id
+        culture_merged = cultures.merge(
+            cohort_windows,
+            on='subject_id',
+            how='inner'
+        )
 
-                    if stay['stay_id'] in sepsis_stays:
-                        break
+        # Filter cultures within ICU stay window (±24h)
+        cultures_in_window = culture_merged[
+            (culture_merged['charttime'] >= culture_merged['intime_buffer']) &
+            (culture_merged['charttime'] <= culture_merged['outtime_buffer'])
+        ][['stay_id', 'subject_id', 'charttime']].copy()
+
+        logger.info(f"    Found {len(cultures_in_window):,} culture events within ICU windows")
+
+        if len(abx_in_window) == 0 or len(cultures_in_window) == 0:
+            logger.warning("    No antibiotics or cultures within ICU windows")
+            return sepsis_stays
+
+        # For each stay, check if any culture-antibiotic pair is within 72h
+        # Group by stay_id to avoid cross-joining all data
+        logger.info("    Checking culture-antibiotic timing (72h window)...")
+
+        for stay_id in cohort_windows['stay_id'].unique():
+            stay_abx = abx_in_window[abx_in_window['stay_id'] == stay_id]
+            stay_cultures = cultures_in_window[cultures_in_window['stay_id'] == stay_id]
+
+            if len(stay_abx) == 0 or len(stay_cultures) == 0:
+                continue
+
+            # Vectorized time difference calculation
+            # Cross join culture and antibiotic times for this stay
+            culture_times = stay_cultures['charttime'].values
+            abx_times = stay_abx['starttime'].values
+
+            # Compute all pairwise time differences (in hours)
+            time_diffs = np.abs(
+                (culture_times[:, np.newaxis] - abx_times[np.newaxis, :]).astype('timedelta64[h]').astype(float)
+            )
+
+            # Check if any pair is within 72h
+            if np.any(time_diffs <= 72):
+                sepsis_stays.add(stay_id)
+
+        logger.info(f"    Identified {len(sepsis_stays):,} stays with suspected infection")
 
         return sepsis_stays
 
