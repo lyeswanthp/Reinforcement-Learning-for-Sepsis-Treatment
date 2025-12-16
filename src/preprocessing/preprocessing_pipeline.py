@@ -369,7 +369,7 @@ class MIMICPreprocessingPipeline:
 
             logger.info("Extracting vasopressor doses...")
             vasopressors = self.icu_extractor.extract_vasopressor_dose(
-                self.cohort, inputevents
+                self.cohort, inputevents, self.d_items
             )
         except Exception as e:
             logger.warning(f"Could not extract fluid/vasopressor data: {e}")

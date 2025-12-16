@@ -352,7 +352,8 @@ class ICUFeatureExtractor:
     def extract_vasopressor_dose(
         self,
         cohort: pd.DataFrame,
-        inputevents: pd.DataFrame
+        inputevents: pd.DataFrame,
+        d_items: pd.DataFrame = None
     ) -> pd.DataFrame:
         """
         Extract vasopressor doses
@@ -360,6 +361,7 @@ class ICUFeatureExtractor:
         Args:
             cohort: Cohort ICU stays
             inputevents: Input events
+            d_items: Items dictionary (optional, for mapping names to itemids)
 
         Returns:
             DataFrame with vasopressor dose features
@@ -368,26 +370,64 @@ class ICUFeatureExtractor:
 
         cohort_stays = cohort['stay_id'].unique()
 
-        # Filter for vasopressors
-        vasopressor_events = []
+        # Method 1: If d_items is provided, use itemid mapping (MIMIC-IV 3.x approach)
+        if d_items is not None:
+            # Map vasopressor names to itemids using d_items
+            vaso_itemid_map = self._create_vasopressor_itemid_map(d_items)
 
-        for vaso_name, keywords in self.VASOPRESSOR_ITEMS.items():
-            for keyword in keywords:
-                vaso_data = inputevents[
-                    (inputevents['stay_id'].isin(cohort_stays)) &
-                    (inputevents['ordercategoryname'].str.contains('Vasoactive', case=False, na=False) |
-                     inputevents['ordercategorydescription'].str.contains(keyword, case=False, na=False))
-                ].copy()
+            # Get all vasopressor itemids
+            all_vaso_itemids = []
+            for itemids in vaso_itemid_map.values():
+                all_vaso_itemids.extend(itemids)
 
-                if len(vaso_data) > 0:
-                    vaso_data['vasopressor_type'] = vaso_name
-                    vasopressor_events.append(vaso_data)
+            if len(all_vaso_itemids) == 0:
+                logger.warning("  No vasopressor itemids found in d_items")
+                return pd.DataFrame()
 
-        if len(vasopressor_events) == 0:
-            logger.warning("  No vasopressor data found")
-            return pd.DataFrame()
+            logger.info(f"  Found {len(all_vaso_itemids)} vasopressor item IDs")
 
-        vasopressors = pd.concat(vasopressor_events, ignore_index=True)
+            # Filter inputevents for cohort and vasopressor items
+            vasopressors = inputevents[
+                (inputevents['stay_id'].isin(cohort_stays)) &
+                (inputevents['itemid'].isin(all_vaso_itemids))
+            ].copy()
+
+            if len(vasopressors) == 0:
+                logger.warning("  No vasopressor events found in inputevents")
+                return pd.DataFrame()
+
+            # Map itemid to vasopressor type
+            itemid_to_vaso = {}
+            for vaso_name, itemids in vaso_itemid_map.items():
+                for itemid in itemids:
+                    itemid_to_vaso[itemid] = vaso_name
+
+            vasopressors['vasopressor_type'] = vasopressors['itemid'].map(itemid_to_vaso)
+
+        # Method 2: Legacy approach using ordercategoryname (MIMIC-III style)
+        else:
+            vasopressor_events = []
+
+            for vaso_name, keywords in self.VASOPRESSOR_ITEMS.items():
+                for keyword in keywords:
+                    # Check if required columns exist
+                    if 'ordercategoryname' in inputevents.columns or 'ordercategorydescription' in inputevents.columns:
+                        vaso_data = inputevents[
+                            (inputevents['stay_id'].isin(cohort_stays)) &
+                            (inputevents.get('ordercategoryname', pd.Series()).str.contains('Vasoactive', case=False, na=False) |
+                             inputevents.get('ordercategorydescription', pd.Series()).str.contains(keyword, case=False, na=False))
+                        ].copy()
+
+                        if len(vaso_data) > 0:
+                            vaso_data['vasopressor_type'] = vaso_name
+                            vasopressor_events.append(vaso_data)
+
+            if len(vasopressor_events) == 0:
+                logger.warning("  No vasopressor data found (columns ordercategoryname/ordercategorydescription not available)")
+                logger.info("  Tip: Ensure d_items is passed to use itemid mapping approach")
+                return pd.DataFrame()
+
+            vasopressors = pd.concat(vasopressor_events, ignore_index=True)
 
         # Merge with cohort
         vasopressors = vasopressors.merge(
@@ -415,6 +455,32 @@ class ICUFeatureExtractor:
 
         logger.info(f"✓ Extracted vasopressor doses: {len(vaso_features):,} observations")
         return vaso_features
+
+    def _create_vasopressor_itemid_map(self, d_items: pd.DataFrame) -> Dict[str, List[int]]:
+        """
+        Map vasopressor names to itemids using d_items
+
+        Args:
+            d_items: Items dictionary
+
+        Returns:
+            Dictionary mapping vasopressor names to lists of itemids
+        """
+        vaso_itemid_map = {}
+
+        for vaso_name, keywords in self.VASOPRESSOR_ITEMS.items():
+            itemids = []
+            for keyword in keywords:
+                matches = d_items[
+                    d_items['label'].str.contains(keyword, case=False, na=False)
+                ]['itemid'].tolist()
+                itemids.extend(matches)
+
+            if itemids:
+                vaso_itemid_map[vaso_name] = list(set(itemids))  # Remove duplicates
+                logger.debug(f"    {vaso_name}: {len(vaso_itemid_map[vaso_name])} items")
+
+        return vaso_itemid_map
 
     def calculate_derived_scores(
         self,

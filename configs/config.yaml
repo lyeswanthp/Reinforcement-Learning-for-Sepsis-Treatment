@@ -225,8 +225,17 @@ preprocessing:
 
   # Missing data handling
   missing_data:
-    strategy: "forward_fill_then_median"  # Options: forward_fill, median, knn
-    max_missing_ratio: 0.5  # Drop features with >50% missing
+    strategy: "forward_fill_then_knn"  # Options: forward_fill, median, knn, forward_fill_then_median, forward_fill_then_knn
+    max_missing_ratio: 0.99  # Drop features with >99% missing (essentially keep all features)
+    knn_neighbors: 1  # Number of neighbors for KNN imputation (k=1 matches AI Clinician)
+
+    # Rationale for this approach:
+    # - We need ALL clinical features for RL state representation
+    # - Features like max_dose_vaso (action), Arterial_lactate (septic shock indicator),
+    #   WBC, Platelets, Temp (SOFA components) are CRITICAL even if sparse
+    # - KNN imputation uses patient similarity (better than median for sparse data)
+    # - Forward fill captures temporal continuity within each patient
+    # - This preserves maximum clinical information for the RL agent
 
   # Outlier detection
   outliers:
